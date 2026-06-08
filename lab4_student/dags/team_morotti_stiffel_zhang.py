@@ -34,7 +34,7 @@ with DAG(
     # Task 1 — Wait for the vendor CSV to appear
     wait_csv = FileSensor(
         task_id="wait_for_csv",
-        filepath="data/incoming/transactions_{{ ds }}.csv",
+        filepath="/opt/airflow/data/incoming/transactions_{{ ds }}.csv",
         poke_interval=15,
         timeout=600,
         mode="poke",

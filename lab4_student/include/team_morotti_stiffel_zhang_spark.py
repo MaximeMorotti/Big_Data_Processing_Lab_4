@@ -92,24 +92,43 @@ def transform_3(df: DataFrame) -> DataFrame:
 
 def run_daily(logical_date: str, *, with_reference: bool = False) -> dict:
     """Called from the Airflow @task. Idempotent: overwrites existing outputs."""
+
+    import shutil
+
+    curated = _curated_path(logical_date)
+
+    if Path(curated).exists():
+        shutil.rmtree(curated)
+
     spark = (
         SparkSession.builder.appName(f"team_morotti_stiffel_zhang_{logical_date}")
         .master("local[*]")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
         .getOrCreate()
     )
+
     spark.sparkContext.setLogLevel("WARN")
 
+    # ✅ Clé : désactiver le chmod Hadoop (incompatible avec NTFS/WSL2)
+
+    hc = spark.sparkContext._jsc.hadoopConfiguration()
+
+    hc.set("mapreduce.fileoutputcommitter.marksuccessfuljobs", "false")
+
+    hc.set("fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem")
+
+    hc.setBoolean("fs.file.impl.disable.cache", True)
+
     try:
-        # Pipeline
         df1 = transform_1(spark, logical_date)
+
         df2 = transform_2(spark, df1, logical_date)
+
         df3 = transform_3(df2)
 
-        # Write Gold Parquet (overwrite for idempotence)
-        curated = _curated_path(logical_date)
         df3.write.mode("overwrite").parquet(curated)
 
-        # Collect totals for the JSON report
         totals = df3.agg(
             F.round(F.sum("total_revenue_eur"), 2).alias("total_revenue_eur"),
             F.sum("transaction_count").alias("transaction_count"),
@@ -123,12 +142,14 @@ def run_daily(logical_date: str, *, with_reference: bool = False) -> dict:
             "status": "ok",
         }
 
-        # Write JSON report (overwrite for idempotence)
         report_path = _report_path(logical_date)
+
         report_path.parent.mkdir(parents=True, exist_ok=True)
+
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         print(f"[run_daily] Done for ds={logical_date}: {report}")
+
         return report
 
     finally:
